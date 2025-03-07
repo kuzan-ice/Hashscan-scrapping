@@ -4,63 +4,61 @@ const fsPromises = require("fs").promises;
 const path = require("path");
 require("dotenv").config();
 
-const ADDRESS_FILE = path.join(__dirname, "address.txt");
-const MAX_FILE_SIZE = 7.5 * 1024 * 1024; // 7.5 MB
+const MAX_FILE_SIZE = 0.001 * 1024 * 1024;
 const MIN_HBAR_BALANCE = 1000;
+
 let currentFileNumber = 1;
 let currentFileSize = 0;
-
-async function initializeFiles() {
-  try {
-    const filePath = getNewFilePath(currentFileNumber);
-    await fsPromises.writeFile(filePath, "[]", { flag: "w" });
-    console.log(`Successfully initialized ${filePath}`);
-  } catch (error) {
-    console.error("Error initializing files:", error.message);
-    throw error;
-  }
-}
-
-async function appendToFile(filePath, data) {
-  try {
-    const dataSize = Buffer.byteLength(JSON.stringify(data), "utf8") + 2; // +2 for newline and comma
-
-    if (currentFileSize + dataSize > MAX_FILE_SIZE) {
-      // Start a new file
-      currentFileNumber++;
-      currentFileSize = 0;
-      filePath = getNewFilePath(currentFileNumber);
-      await fsPromises.writeFile(filePath, "[", "utf8"); // Initialize new file with opening bracket
-    }
-
-    const fileStream = fs.createWriteStream(filePath, {
-      flags: "a", // Append mode
-    });
-
-    if (currentFileSize === 0) {
-      // First write to the file, include the opening bracket (already handled above)
-    }
-
-    await new Promise((resolve, reject) => {
-      fileStream.write(
-        JSON.stringify(data) + (currentFileSize === 0 ? "" : ",") + "\n"
-      );
-      fileStream.end();
-      fileStream.on("finish", resolve);
-      fileStream.on("error", reject);
-    });
-
-    currentFileSize += dataSize;
-
-    console.log(`Data appended successfully to ${filePath}.`);
-  } catch (error) {
-    console.error(`Error appending to ${filePath}:`, error.message);
-    throw error;
-  }
-}
+let firstWrite = true;
+let fileStream = null;
+let filePath = "";
 
 function getNewFilePath(fileNumber) {
-  return path.join(__dirname, `address-${fileNumber}.txt`);
+  return path.join(`${__dirname}/data`, `address-${fileNumber}.txt`);
+}
+
+async function initializeNewFile() {
+  try {
+    filePath = getNewFilePath(currentFileNumber);
+    await fsPromises.writeFile(filePath, "[\n", "utf8");
+
+    firstWrite = true;
+    currentFileSize = 2;
+    console.log(`Created new file: ${filePath}`);
+  } catch (error) {
+    console.error("Error initializing new file:", error.message);
+    throw error;
+  }
+}
+
+async function appendToFile(data) {
+  try {
+    if (!filePath) {
+      await initializeNewFile();
+    }
+
+    const dataString = JSON.stringify(data, null, 2);
+    const dataSize = Buffer.byteLength(dataString, "utf8");
+    const commaSize = firstWrite ? 0 : 2;
+
+    if (currentFileSize + dataSize + commaSize + 2 > MAX_FILE_SIZE) {
+      await fsPromises.appendFile(filePath, "\n]", "utf8");
+      console.log(`Closed file: ${filePath}`);
+
+      currentFileNumber++;
+      await initializeNewFile();
+    }
+
+    const prefix = firstWrite ? "" : ",\n";
+    await fsPromises.appendFile(filePath, prefix + dataString, "utf8");
+
+    currentFileSize += dataSize + commaSize;
+    firstWrite = false;
+
+    console.log(`Data appended successfully to ${filePath}`);
+  } catch (error) {
+    console.error(`Error appending to ${filePath}:`, error.message);
+  }
 }
 
 async function getAllAccountBalances(limit = 100) {
@@ -68,15 +66,12 @@ async function getAllAccountBalances(limit = 100) {
     const baseUrl = "https://mainnet-public.mirrornode.hedera.com";
     let nextLink = `${baseUrl}/api/v1/accounts?limit=${limit}&order=desc`;
     let scrapedAll = false;
-    var links = nextLink;
-    let filePath = getNewFilePath(currentFileNumber);
 
     while (nextLink && !scrapedAll) {
       console.log(`Fetching from: ${nextLink}`);
       const response = await axios.get(nextLink);
       const { data } = response;
       const accounts = data.accounts;
-      links = data.links;
 
       if (!accounts || !Array.isArray(accounts)) {
         throw new Error("Invalid response format: missing accounts array");
@@ -91,14 +86,10 @@ async function getAllAccountBalances(limit = 100) {
       for (const account of accounts) {
         const accountId = account.account;
         const balance = account.balance.balance / 100000000;
-
-        const info = {
-          account: accountId,
-          balance: balance,
-        };
+        const info = { account: accountId, balance: balance };
 
         if (balance >= MIN_HBAR_BALANCE) {
-          await appendToFile(filePath, info);
+          await appendToFile(info);
           console.log(
             `Address ${accountId} with balance ${balance} HBAR meets the requirement and saved.`
           );
@@ -108,17 +99,21 @@ async function getAllAccountBalances(limit = 100) {
           );
         }
       }
-      console.log(links);
-      nextLink = links && links.next ? `${baseUrl}${links.next}` : null;
-      console.log(nextLink);
+
+      nextLink =
+        data.links && typeof data.links.next === "string"
+          ? `${baseUrl}${data.links.next}`
+          : null;
+
+      console.log(`Next Link: ${nextLink}`);
+
       if (!nextLink) {
         console.log("No more pages. Finished scraping.");
         scrapedAll = true;
-
-        // Close the last file with a closing bracket
-        await fsPromises.appendFile(filePath, "]");
       }
     }
+
+    await fsPromises.appendFile(filePath, "\n]", "utf8");
 
     console.log("Finished scraping all available accounts.");
   } catch (error) {
@@ -136,7 +131,7 @@ async function getAllAccountBalances(limit = 100) {
 
 async function main() {
   try {
-    await initializeFiles();
+    await initializeNewFile();
     await getAllAccountBalances();
   } catch (error) {
     console.error("An error occurred:", error.message);
@@ -144,3 +139,5 @@ async function main() {
 }
 
 main();
+
+
