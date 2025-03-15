@@ -68,7 +68,6 @@ async function getAllAccountBalances(limit = 100) {
     let scrapedAll = false;
 
     while (nextLink && !scrapedAll) {
-      console.log(`Fetching from: ${nextLink}`);
       const response = await axios.get(nextLink);
       const { data } = response;
       const accounts = data.accounts;
@@ -88,6 +87,12 @@ async function getAllAccountBalances(limit = 100) {
         const balance = account.balance.balance / 100000000;
         const info = { account: accountId, balance: balance };
 
+        if (accountId === "0.0.1") {
+          console.log(`Reached account ID ${accountId}. Stopping scraping.`);
+          scrapedAll = true;
+          break;
+        }
+
         if (balance >= MIN_HBAR_BALANCE) {
           await appendToFile(info);
           console.log(
@@ -100,21 +105,23 @@ async function getAllAccountBalances(limit = 100) {
         }
       }
 
+      if (scrapedAll) {
+        break;
+      }
+
       nextLink =
         data.links && typeof data.links.next === "string"
           ? `${baseUrl}${data.links.next}`
           : null;
 
-      console.log(`Next Link: ${nextLink}`);
-
       if (!nextLink) {
         console.log("No more pages. Finished scraping.");
         scrapedAll = true;
+        break;
       }
     }
 
     await fsPromises.appendFile(filePath, "\n]", "utf8");
-
     console.log("Finished scraping all available accounts.");
   } catch (error) {
     console.error("Error fetching account balances:", error.message);
@@ -133,8 +140,11 @@ async function main() {
   try {
     await initializeNewFile();
     await getAllAccountBalances();
+    console.log("Scraping completed successfully.");
+    process.exit(0);
   } catch (error) {
     console.error("An error occurred:", error.message);
+    process.exit(1);
   }
 }
 
